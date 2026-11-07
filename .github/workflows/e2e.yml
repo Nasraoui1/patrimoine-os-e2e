@@ -84,7 +84,8 @@ jobs:
         env:
           VITE_API_URL: http://localhost:3000/api/v1
         run: |
-          npm ci
+          # Même option que le CI du repo web (conflit de peer deps eslint 9 / @eslint/js 10)
+          npm ci --legacy-peer-deps --ignore-scripts
           nohup npx vite --port 5173 --strictPort > web.log 2>&1 &
 
       - name: Wait for apps
