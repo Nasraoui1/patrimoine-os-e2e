@@ -1,0 +1,111 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  # Permet aux repos web/api de déclencher les tests via repository_dispatch
+  repository_dispatch:
+    types: [run-e2e]
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: patrimoine_os
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+
+    env:
+      WEB_URL: http://localhost:5173
+      API_URL: http://localhost:3000/api/v1
+
+    steps:
+      - name: Checkout e2e
+        uses: actions/checkout@v4
+
+      - name: Checkout API
+        uses: actions/checkout@v4
+        with:
+          repository: LucasRatiaray/patrimoine-os-api
+          path: apps/api
+          # Si le repo est privé : créer un secret REPO_TOKEN (PAT avec accès lecture)
+          token: ${{ secrets.REPO_TOKEN || github.token }}
+
+      - name: Checkout Web
+        uses: actions/checkout@v4
+        with:
+          repository: LucasRatiaray/patrimoine-os-web
+          path: apps/web
+          token: ${{ secrets.REPO_TOKEN || github.token }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Start API
+        working-directory: apps/api
+        env:
+          NODE_ENV: test
+          PORT: 3000
+          HOST: 0.0.0.0
+          LOG_LEVEL: warn
+          CORS_ORIGIN: http://localhost:5173
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_USER: postgres
+          DB_PASSWORD: postgres
+          DB_NAME: patrimoine_os
+          DB_LOGGING: false
+          JWT_ACCESS_SECRET: ci-only-secret-not-used-anywhere-else-0123456789
+          JWT_ACCESS_TTL: 15m
+          REFRESH_TOKEN_TTL_DAYS: 7
+          FRONTEND_URL: http://localhost:5173
+          SMTP_HOST: localhost
+          SMTP_PORT: 1025
+          MAIL_FROM: no-reply@example.test
+        run: |
+          npm ci
+          npm run build
+          npm run migration:run || true
+          nohup npm run start:prod > api.log 2>&1 &
+
+      - name: Start Web
+        working-directory: apps/web
+        env:
+          VITE_API_URL: http://localhost:3000/api/v1
+        run: |
+          npm ci
+          nohup npx vite --port 5173 --strictPort > web.log 2>&1 &
+
+      - name: Wait for apps
+        run: npx --yes wait-on -t 120000 http-get://localhost:3000/api/v1/health/detailed http-get://localhost:5173
+
+      - name: Install e2e deps
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium firefox
+
+      - name: Run Playwright
+        run: npx playwright test
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+            apps/api/api.log
+            apps/web/web.log
+          retention-days: 14
